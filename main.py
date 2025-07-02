@@ -4,11 +4,11 @@ from transformers import AutoModel, AutoTokenizer
 from typing import List, Union
 import torch
 import os
+os.environ["TRANSFORMERS_CACHE"] = "/opt/render/project/.hf_cache"
 from pydantic import BaseModel
 
 # Hugging Face cache workaround for Render
 os.environ["HF_HOME"] = "./hf_cache"
-os.environ["TRANSFORMERS_CACHE"] = "./hf_cache"
 os.environ["HF_HUB_CACHE"] = "./hf_cache"
 
 # run uvicorn main:app --reload
