@@ -1,5 +1,8 @@
 import os
 import tempfile
+import asyncio
+import aiohttp
+from datetime import datetime
 
 # Set cache paths BEFORE importing transformers
 # Use /tmp which is writable on Render, or create a subdirectory in the project
@@ -18,36 +21,82 @@ from typing import List, Union
 import torch
 from pydantic import BaseModel
 
+
 # run uvicorn main:app --reload
 
 class EmbedRequest(BaseModel):
     texts: List[str]
 
+
 class SingleEmbedRequest(BaseModel):
     text: str
+
 
 class EmbedResponse(BaseModel):
     embeddings: List[List[float]]
     embedding_model_name: str
     dimension: int
 
+
 class SingleEmbedResponse(BaseModel):
     embedding: List[float]
     embedding_model_name: str
     dimension: int
+
 
 class HealthResponse(BaseModel):
     status: str
     embedding_model_loaded: bool
     embedding_model_name: str
 
+
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 model_info = {"loaded": False, "dimension": 384}
+
+# Self-ping configuration
+SELF_PING_ENABLED = os.environ.get("SELF_PING_ENABLED", "true").lower() == "true"
+SELF_PING_INTERVAL = int(os.environ.get("SELF_PING_INTERVAL", "600"))  # 10 minutes default
+SELF_PING_URL = os.environ.get("SELF_PING_URL", "")  # Set this to your deployed URL
+
+
+async def self_ping_task():
+    """Background task to ping the service periodically to prevent it from sleeping"""
+    if not SELF_PING_ENABLED or not SELF_PING_URL:
+        print("Self-ping disabled or URL not configured")
+        return
+
+    print(f"Starting self-ping task - pinging every {SELF_PING_INTERVAL} seconds")
+
+    while True:
+        try:
+            await asyncio.sleep(SELF_PING_INTERVAL)
+
+            async with aiohttp.ClientSession() as session:
+                ping_url = f"{SELF_PING_URL}/health"
+                async with session.get(ping_url, timeout=30) as response:
+                    if response.status == 200:
+                        print(f"Self-ping successful at {datetime.now()}")
+                    else:
+                        print(f"Self-ping failed with status {response.status} at {datetime.now()}")
+
+        except asyncio.CancelledError:
+            print("Self-ping task cancelled")
+            break
+        except Exception as e:
+            print(f"Self-ping error at {datetime.now()}: {e}")
+            # Continue the loop even if there's an error
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"Cache directory: {CACHE_DIR}")
     print(f"Loading model: {MODEL_NAME}...")
+
+    # Start self-ping task
+    ping_task = None
+    if SELF_PING_ENABLED and SELF_PING_URL:
+        ping_task = asyncio.create_task(self_ping_task())
+
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             MODEL_NAME,
@@ -87,8 +136,18 @@ async def lifespan(app: FastAPI):
             print("Model loaded successfully with alternative cache")
         except Exception as e2:
             print(f"Error with alternative cache: {e2}")
+
     yield
+
+    # Cleanup
+    if ping_task:
+        ping_task.cancel()
+        try:
+            await ping_task
+        except asyncio.CancelledError:
+            pass
     print("Shutting down...")
+
 
 app = FastAPI(
     title="Embedding Service",
@@ -97,11 +156,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
 def mean_pooling(model_output, attention_mask):
     # mean pooling for sentence transformers
     token_embeddings = model_output[0]
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
 
 def get_embeddings(texts: List[str], tokenizer, model) -> List[List[float]]:
     if not texts:
@@ -120,6 +181,7 @@ def get_embeddings(texts: List[str], tokenizer, model) -> List[List[float]]:
     embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
     return embeddings.numpy().tolist()
 
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     return HealthResponse(
@@ -127,6 +189,7 @@ async def health_check():
         embedding_model_loaded=model_info["loaded"],
         embedding_model_name=MODEL_NAME
     )
+
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed_texts(request: EmbedRequest):
@@ -149,6 +212,7 @@ async def embed_texts(request: EmbedRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating embeddings: {str(e)}")
 
+
 @app.post("/embed_single", response_model=SingleEmbedResponse)
 async def embed_single_text(request: SingleEmbedRequest):
     if not model_info["loaded"]:
@@ -170,6 +234,18 @@ async def embed_single_text(request: SingleEmbedRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating embedding: {str(e)}")
 
+
+@app.get("/ping-status")
+async def ping_status():
+    """Endpoint to check self-ping configuration"""
+    return {
+        "self_ping_enabled": SELF_PING_ENABLED,
+        "self_ping_interval": SELF_PING_INTERVAL,
+        "self_ping_url": SELF_PING_URL,
+        "current_time": datetime.now().isoformat()
+    }
+
+
 @app.get("/")
 async def root():
     return {
@@ -177,15 +253,19 @@ async def root():
         "model": MODEL_NAME,
         "model_loaded": model_info["loaded"],
         "cache_directory": CACHE_DIR,
+        "self_ping_enabled": SELF_PING_ENABLED,
         "endpoints": {
             "health": "/health",
             "embed_multiple": "/embed",
             "embed_single": "/embed_single",
+            "ping_status": "/ping-status",
             "docs": "/docs"
         }
     }
 
+
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
