@@ -3,9 +3,6 @@ import tempfile
 import asyncio
 import aiohttp
 from datetime import datetime
-
-# Set cache paths BEFORE importing transformers
-# Use /tmp which is writable on Render, or create a subdirectory in the project
 CACHE_DIR = os.path.join(os.getcwd(), "hf_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -20,9 +17,6 @@ from transformers import AutoModel, AutoTokenizer
 from typing import List, Union
 import torch
 from pydantic import BaseModel
-
-
-# run uvicorn main:app --reload
 
 class EmbedRequest(BaseModel):
     texts: List[str]
@@ -52,11 +46,9 @@ class HealthResponse(BaseModel):
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 model_info = {"loaded": False, "dimension": 384}
-
-# Self-ping configuration
 SELF_PING_ENABLED = os.environ.get("SELF_PING_ENABLED", "true").lower() == "true"
-SELF_PING_INTERVAL = int(os.environ.get("SELF_PING_INTERVAL", "600"))  # 10 minutes default
-SELF_PING_URL = os.environ.get("SELF_PING_URL", "")  # Set this to your deployed URL
+SELF_PING_INTERVAL = int(os.environ.get("SELF_PING_INTERVAL", "600"))
+SELF_PING_URL = os.environ.get("SELF_PING_URL", "")
 
 
 async def self_ping_task():
@@ -84,15 +76,12 @@ async def self_ping_task():
             break
         except Exception as e:
             print(f"Self-ping error at {datetime.now()}: {e}")
-            # Continue the loop even if there's an error
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"Cache directory: {CACHE_DIR}")
     print(f"Loading model: {MODEL_NAME}...")
-
-    # Start self-ping task
     ping_task = None
     if SELF_PING_ENABLED and SELF_PING_URL:
         ping_task = asyncio.create_task(self_ping_task())
@@ -115,7 +104,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error loading model: {e}")
         model_info["loaded"] = False
-        # Try alternative cache location if the first fails
         print("Trying alternative cache location...")
         try:
             alt_cache = "/tmp/hf_cache"
@@ -138,8 +126,6 @@ async def lifespan(app: FastAPI):
             print(f"Error with alternative cache: {e2}")
 
     yield
-
-    # Cleanup
     if ping_task:
         ping_task.cancel()
         try:
@@ -158,7 +144,6 @@ app = FastAPI(
 
 
 def mean_pooling(model_output, attention_mask):
-    # mean pooling for sentence transformers
     token_embeddings = model_output[0]
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
