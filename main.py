@@ -168,6 +168,7 @@ def get_embeddings(texts: List[str], tokenizer, model) -> List[List[float]]:
 
 
 @app.get("/health", response_model=HealthResponse)
+@app.head("/health")
 async def health_check():
     return HealthResponse(
         status='healthy' if model_info["loaded"] else 'unhealthy',
@@ -232,6 +233,7 @@ async def ping_status():
 
 
 @app.get("/")
+@app.head("/")
 async def root():
     return {
         "message": "Embedding Service API",
