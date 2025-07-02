@@ -5,27 +5,34 @@ from typing import List, Union
 import torch
 import os
 from pydantic import BaseModel
+
+# Hugging Face cache workaround for Render
+os.environ["HF_HOME"] = "./hf_cache"
+os.environ["TRANSFORMERS_CACHE"] = "./hf_cache"
+os.environ["HF_HUB_CACHE"] = "./hf_cache"
+
 # run uvicorn main:app --reload
-
-
 
 class EmbedRequest(BaseModel):
     texts: List[str]
 
 class SingleEmbedRequest(BaseModel):
     text: str
+
 class EmbedResponse(BaseModel):
     embeddings: List[List[float]]
-    model_name: str
+    embedding_model_name: str
     dimension: int
+
 class SingleEmbedResponse(BaseModel):
     embedding: List[float]
-    model_name: str
+    embedding_model_name: str
     dimension: int
+
 class HealthResponse(BaseModel):
     status: str
-    model_loaded: bool
-    model_name: str
+    embedding_model_loaded: bool
+    embedding_model_name: str
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 model_info = {"loaded": False, "dimension": 384}
@@ -34,8 +41,8 @@ model_info = {"loaded": False, "dimension": 384}
 async def lifespan(app: FastAPI):
     print(f"loading model:{MODEL_NAME}...")
     try:
-        tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-        model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        model = AutoModel.from_pretrained(MODEL_NAME)
         app.state.tokenizer = tokenizer
         app.state.model = model
         model_info["loaded"] = True
@@ -46,15 +53,19 @@ async def lifespan(app: FastAPI):
     yield
     print("shutting down...")
 
-app = FastAPI(title="Embedding Service",
-              description="FastAPI service for generating text embeddings using Hugging Face transformers",
-              version="1.0.0",
-              lifespan=lifespan)
+app = FastAPI(
+    title="Embedding Service",
+    description="FastAPI service for generating text embeddings using Hugging Face transformers",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
 def mean_pooling(model_output, attention_mask):
-    # this is for applying mean pooling to get sentence transformer
+    # mean pooling for sentence transformers
     token_embeddings = model_output[0]
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-    return torch.sum(token_embeddings * input_mask_expanded,1)/torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+    return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
 def get_embeddings(texts: List[str], tokenizer, model) -> List[List[float]]:
     if not texts:
         raise HTTPException(status_code=400, detail="No texts provided")
@@ -76,9 +87,10 @@ def get_embeddings(texts: List[str], tokenizer, model) -> List[List[float]]:
 async def health_check():
     return HealthResponse(
         status='healthy' if model_info["loaded"] else 'unhealthy',
-        model_loaded=model_info["loaded"],
-        model_name=MODEL_NAME
+        embedding_model_loaded=model_info["loaded"],
+        embedding_model_name=MODEL_NAME
     )
+
 @app.post("/embed", response_model=EmbedResponse)
 async def embed_texts(request: EmbedRequest):
     if not model_info["loaded"]:
@@ -93,13 +105,12 @@ async def embed_texts(request: EmbedRequest):
 
         return EmbedResponse(
             embeddings=embeddings,
-            model_name=MODEL_NAME,
+            embedding_model_name=MODEL_NAME,
             dimension=model_info["dimension"]
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating embeddings: {str(e)}")
-
 
 @app.post("/embed_single", response_model=SingleEmbedResponse)
 async def embed_single_text(request: SingleEmbedRequest):
@@ -115,7 +126,7 @@ async def embed_single_text(request: SingleEmbedRequest):
 
         return SingleEmbedResponse(
             embedding=embeddings[0],
-            model_name=MODEL_NAME,
+            embedding_model_name=MODEL_NAME,
             dimension=model_info["dimension"]
         )
 
