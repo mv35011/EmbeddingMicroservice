@@ -1,15 +1,22 @@
+import os
+import tempfile
+
+# Set cache paths BEFORE importing transformers
+# Use /tmp which is writable on Render, or create a subdirectory in the project
+CACHE_DIR = os.path.join(os.getcwd(), "hf_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["HF_HUB_CACHE"] = CACHE_DIR
+os.environ["TORCH_HOME"] = CACHE_DIR
+
 from fastapi import FastAPI, Request, HTTPException
 from contextlib import asynccontextmanager
 from transformers import AutoModel, AutoTokenizer
 from typing import List, Union
 import torch
-import os
-os.environ["TRANSFORMERS_CACHE"] = "/opt/render/project/.hf_cache"
 from pydantic import BaseModel
-
-# Hugging Face cache workaround for Render
-os.environ["HF_HOME"] = "./hf_cache"
-os.environ["HF_HUB_CACHE"] = "./hf_cache"
 
 # run uvicorn main:app --reload
 
@@ -39,19 +46,49 @@ model_info = {"loaded": False, "dimension": 384}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"loading model:{MODEL_NAME}...")
+    print(f"Cache directory: {CACHE_DIR}")
+    print(f"Loading model: {MODEL_NAME}...")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-        model = AutoModel.from_pretrained(MODEL_NAME)
+        tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_NAME,
+            cache_dir=CACHE_DIR,
+            local_files_only=False
+        )
+        model = AutoModel.from_pretrained(
+            MODEL_NAME,
+            cache_dir=CACHE_DIR,
+            local_files_only=False
+        )
         app.state.tokenizer = tokenizer
         app.state.model = model
         model_info["loaded"] = True
-        print("model loaded successfully")
+        print("Model loaded successfully")
     except Exception as e:
         print(f"Error loading model: {e}")
         model_info["loaded"] = False
+        # Try alternative cache location if the first fails
+        print("Trying alternative cache location...")
+        try:
+            alt_cache = "/tmp/hf_cache"
+            os.makedirs(alt_cache, exist_ok=True)
+            tokenizer = AutoTokenizer.from_pretrained(
+                MODEL_NAME,
+                cache_dir=alt_cache,
+                local_files_only=False
+            )
+            model = AutoModel.from_pretrained(
+                MODEL_NAME,
+                cache_dir=alt_cache,
+                local_files_only=False
+            )
+            app.state.tokenizer = tokenizer
+            app.state.model = model
+            model_info["loaded"] = True
+            print("Model loaded successfully with alternative cache")
+        except Exception as e2:
+            print(f"Error with alternative cache: {e2}")
     yield
-    print("shutting down...")
+    print("Shutting down...")
 
 app = FastAPI(
     title="Embedding Service",
@@ -138,6 +175,8 @@ async def root():
     return {
         "message": "Embedding Service API",
         "model": MODEL_NAME,
+        "model_loaded": model_info["loaded"],
+        "cache_directory": CACHE_DIR,
         "endpoints": {
             "health": "/health",
             "embed_multiple": "/embed",
