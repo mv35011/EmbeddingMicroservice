@@ -152,19 +152,31 @@ def mean_pooling(model_output, attention_mask):
 def get_embeddings(texts: List[str], tokenizer, model) -> List[List[float]]:
     if not texts:
         raise HTTPException(status_code=400, detail="No texts provided")
+    batch_size = 8
+    all_embeddings = []
 
-    inputs = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=512,
-        return_tensors="pt"
-    )
-    with torch.no_grad():
-        model_output = model(**inputs)
-    embeddings = mean_pooling(model_output, inputs['attention_mask'])
-    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-    return embeddings.numpy().tolist()
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i + batch_size]
+
+        inputs = tokenizer(
+            batch_texts,
+            padding=True,
+            truncation=True,
+            max_length=256,
+            return_tensors="pt"
+        )
+
+        with torch.no_grad():
+            model_output = model(**inputs)
+
+        embeddings = mean_pooling(model_output, inputs['attention_mask'])
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        batch_embeddings = embeddings.numpy().tolist()
+        all_embeddings.extend(batch_embeddings)
+        del inputs, model_output, embeddings, batch_embeddings
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    return all_embeddings
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -181,6 +193,11 @@ async def health_check():
 async def embed_texts(request: EmbedRequest):
     if not model_info["loaded"]:
         raise HTTPException(status_code=503, detail="Model not loaded")
+    if len(request.texts) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size too large. Maximum 20 texts allowed, got {len(request.texts)}"
+        )
 
     try:
         embeddings = get_embeddings(
